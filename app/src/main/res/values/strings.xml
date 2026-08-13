@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">DrawLock</string>
+    <string name="wallpaper_description">Живые обои для экрана блокировки и рабочего стола с отображением рисунков вашего партнёра в реальном времени.</string>
+    <string name="lockscreen_notification_title">Рисование на экране блокировки</string>
+    <string name="lockscreen_notification_text">Нажмите, чтобы отправить рисунок на обои партнёра</string>
+    <string name="notification_channel_name">Оповещения DrawLock</string>
+    <string name="notification_channel_desc">Оповещения и быстрый доступ к рисованию на экране блокировки</string>
+</resources>

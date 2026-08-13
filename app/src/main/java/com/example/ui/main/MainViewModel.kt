@@ -1,0 +1,216 @@
+package com.example.ui.main
+
+import android.app.Application
+import android.app.WallpaperManager
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.util.Log
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.example.data.DrawingCacheManager
+import com.example.data.DrawingRepository
+import com.example.data.PairingRepository
+import com.example.data.PairingStatus
+import com.example.model.DrawingData
+import com.example.model.DrawingStroke
+import com.example.service.DrawWallpaperService
+import com.example.service.LockscreenNotificationManager
+import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+
+data class MainUiState(
+    val roomCode: String = "",
+    val isPartnerConnected: Boolean = false,
+    val isLoading: Boolean = false,
+    val errorMessage: String? = null,
+    val isNotificationShortcutEnabled: Boolean = true,
+    val pairingStatus: PairingStatus = PairingStatus.Idle
+)
+
+class MainViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val context: Context get() = getApplication()
+    private val repository = PairingRepository.getInstance(context)
+    private val cacheManager = DrawingCacheManager.getInstance(context)
+
+    val currentDrawing: StateFlow<DrawingData?> = cacheManager.currentDrawing
+
+    private val _uiState = MutableStateFlow(
+        MainUiState(
+            roomCode = cacheManager.roomCode.value,
+            isPartnerConnected = cacheManager.partnerConnected.value,
+            isNotificationShortcutEnabled = cacheManager.shortcutNotificationEnabled.value
+        )
+    )
+    val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
+
+    init {
+        // Eagerly ensure anonymous authentication on ViewModel creation
+        viewModelScope.launch {
+            try {
+                repository.ensureAuthenticated()
+            } catch (e: Exception) {
+                Log.e("DrawLock", "Firestore error during VM auth init", e)
+            }
+        }
+
+        viewModelScope.launch {
+            repository.pairingStatus.collect { status ->
+                when (status) {
+                    is PairingStatus.Loading -> {
+                        _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null, pairingStatus = status)
+                    }
+                    is PairingStatus.Created -> {
+                        _uiState.value = _uiState.value.copy(
+                            roomCode = status.roomCode,
+                            isPartnerConnected = false,
+                            isLoading = false,
+                            errorMessage = null,
+                            pairingStatus = status
+                        )
+                        updateNotification(status.roomCode)
+                    }
+                    is PairingStatus.Connected -> {
+                        _uiState.value = _uiState.value.copy(
+                            roomCode = status.roomCode,
+                            isPartnerConnected = true,
+                            isLoading = false,
+                            errorMessage = null,
+                            pairingStatus = status
+                        )
+                        updateNotification(status.roomCode)
+                    }
+                    is PairingStatus.Joined -> {
+                        _uiState.value = _uiState.value.copy(
+                            roomCode = status.roomCode,
+                            isLoading = false,
+                            errorMessage = null,
+                            pairingStatus = status
+                        )
+                        updateNotification(status.roomCode)
+                    }
+                    is PairingStatus.Error -> {
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false,
+                            errorMessage = status.message,
+                            pairingStatus = status
+                        )
+                    }
+                    is PairingStatus.Idle -> {
+                        _uiState.value = _uiState.value.copy(
+                            isLoading = false,
+                            roomCode = cacheManager.roomCode.value,
+                            isPartnerConnected = cacheManager.partnerConnected.value,
+                            pairingStatus = status
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun createRoom() {
+        _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
+        viewModelScope.launch {
+            try {
+                // Ensure auth first before initiating Firestore write
+                repository.ensureAuthenticated()
+                repository.createRoom { result ->
+                    result.onSuccess { code ->
+                        updateNotification(code)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("DrawLock", "Firestore error in createRoom VM", e)
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    errorMessage = "Не удалось создать комнату. Проверьте интернет."
+                )
+            }
+        }
+    }
+
+    fun joinRoom(code: String) {
+        _uiState.value = _uiState.value.copy(isLoading = true, errorMessage = null)
+        viewModelScope.launch {
+            try {
+                repository.ensureAuthenticated()
+                repository.joinRoom(code) { result ->
+                    result.onSuccess {
+                        updateNotification(code)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("DrawLock", "Firestore error in joinRoom VM", e)
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    errorMessage = "Не удалось подключиться к комнате #$code"
+                )
+            }
+        }
+    }
+
+    fun leaveRoom() {
+        repository.leaveRoom()
+        LockscreenNotificationManager.dismissNotification(context)
+        _uiState.value = _uiState.value.copy(roomCode = "", isPartnerConnected = false)
+    }
+
+    fun toggleNotificationShortcut(enabled: Boolean) {
+        cacheManager.setNotificationEnabled(enabled)
+        _uiState.value = _uiState.value.copy(isNotificationShortcutEnabled = enabled)
+        if (enabled && _uiState.value.roomCode.isNotBlank()) {
+            LockscreenNotificationManager.showLockscreenShortcutNotification(context, _uiState.value.roomCode)
+        } else {
+            LockscreenNotificationManager.dismissNotification(context)
+        }
+    }
+
+    private fun updateNotification(roomCode: String) {
+        if (_uiState.value.isNotificationShortcutEnabled && roomCode.isNotBlank()) {
+            LockscreenNotificationManager.showLockscreenShortcutNotification(context, roomCode)
+        }
+    }
+
+    fun sendTestDrawing(strokes: List<DrawingStroke>) {
+        repository.sendDrawing(strokes)
+    }
+
+    fun appendStrokes(newStrokes: List<DrawingStroke>, onComplete: ((Boolean) -> Unit)? = null) {
+        repository.appendStrokes(newStrokes, onComplete)
+    }
+
+    fun clearDrawing(onComplete: ((Boolean) -> Unit)? = null) {
+        repository.clearDrawing(onComplete)
+    }
+
+    fun refreshWallpaper(onDone: (() -> Unit)? = null) {
+        // 1. Force local broadcast
+        DrawingRepository.getInstance(context).broadcastRefresh()
+        context.sendBroadcast(Intent("ru.wwmaxik.drawlock.REFRESH_WALLPAPER"))
+
+        // 2. Perform manual Firestore fetch to pull latest partner drawing payload and update strokes.json
+        repository.refreshDrawingFromFirestore {
+            onDone?.invoke()
+        }
+    }
+
+    fun getSetWallpaperIntent(): Intent {
+        val intent = Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER).apply {
+            putExtra(
+                WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT,
+                ComponentName(context, DrawWallpaperService::class.java)
+            )
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return intent
+    }
+
+    fun clearError() {
+        _uiState.value = _uiState.value.copy(errorMessage = null)
+    }
+}
