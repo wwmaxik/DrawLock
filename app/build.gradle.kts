@@ -14,7 +14,7 @@ android {
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
-    applicationId = "ru.wwmaxik.drawlock"
+    applicationId = "ru.wwmaxik.drawlock.v2"
     minSdk = 24
     targetSdk = 36
     versionCode = 1
