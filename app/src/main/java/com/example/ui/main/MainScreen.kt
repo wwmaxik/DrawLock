@@ -90,6 +90,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -98,6 +99,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.R
 import com.example.service.DrawWallpaperService
 import com.example.ui.theme.DarkBackground
 import com.example.ui.theme.DarkBorder
@@ -122,6 +124,8 @@ fun MainScreen(
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val uiState by viewModel.uiState.collectAsState()
+    val streakCount by viewModel.streakCount.collectAsState()
+    val showStreakOnWallpaper by viewModel.showStreakOnWallpaper.collectAsState()
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -158,6 +162,7 @@ fun MainScreen(
             item {
                 HeaderSection(
                     isPaired = uiState.roomCode.isNotBlank(),
+                    streakCount = streakCount,
                     onInfoClick = { showHyperOSSheet = true }
                 )
             }
@@ -220,8 +225,8 @@ fun MainScreen(
                             viewModel.refreshWallpaper()
                             Toast.makeText(context, "Обои обновлены", Toast.LENGTH_SHORT).show()
                         },
-                        isNotificationEnabled = uiState.isNotificationShortcutEnabled,
-                        onToggleNotification = { viewModel.toggleNotificationShortcut(it) }
+                        showStreakOnWallpaper = showStreakOnWallpaper,
+                        onToggleStreakOnWallpaper = { viewModel.setShowStreakOnWallpaper(it) }
                     )
                 }
             }
@@ -253,6 +258,7 @@ fun MainScreen(
 @Composable
 fun HeaderSection(
     isPaired: Boolean,
+    streakCount: Long,
     onInfoClick: () -> Unit
 ) {
     Row(
@@ -288,20 +294,52 @@ fun HeaderSection(
             )
         }
 
-        IconButton(
-            onClick = onInfoClick,
-            modifier = Modifier
-                .size(44.dp)
-                .background(DarkSurface, CircleShape)
-                .border(1.dp, DarkBorder, CircleShape)
-                .testTag("hyperos_info_button")
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Icon(
-                imageVector = Icons.Default.Info,
-                contentDescription = "Руководство по настройке",
-                tint = NeonCyan,
-                modifier = Modifier.size(22.dp)
-            )
+            // Daily Streak Flame Badge
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = Color(0x33FF5722),
+                border = BorderStroke(1.dp, Color(0x66FF5722)),
+                modifier = Modifier.testTag("main_streak_badge")
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_fire_streak),
+                        contentDescription = "Огонёк",
+                        tint = Color(0xFFFF5722),
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = "$streakCount",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
+                }
+            }
+
+            IconButton(
+                onClick = onInfoClick,
+                modifier = Modifier
+                    .size(44.dp)
+                    .background(DarkSurface, CircleShape)
+                    .border(1.dp, DarkBorder, CircleShape)
+                    .testTag("hyperos_info_button")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Info,
+                    contentDescription = "Руководство по настройке",
+                    tint = NeonCyan,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
         }
     }
 }
@@ -581,8 +619,8 @@ fun ActionsCard(
     onOpenLockDrawer: () -> Unit,
     onSetWallpaper: () -> Unit,
     onRefreshWallpaper: () -> Unit,
-    isNotificationEnabled: Boolean,
-    onToggleNotification: (Boolean) -> Unit
+    showStreakOnWallpaper: Boolean,
+    onToggleStreakOnWallpaper: (Boolean) -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -669,11 +707,12 @@ fun ActionsCard(
                 }
             }
 
-            // Draw Now (Direct Active Layer Launcher) - Responsive Multi-line Button
+            // Draw Now (Direct In-App Canvas Launcher)
             Button(
                 onClick = onOpenLockDrawer,
                 modifier = Modifier
                     .fillMaxWidth()
+                    .height(52.dp)
                     .testTag("draw_now_button"),
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(
@@ -684,8 +723,7 @@ fun ActionsCard(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
-                    modifier = Modifier.fillMaxWidth()
+                    horizontalArrangement = Arrangement.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.Brush,
@@ -693,27 +731,16 @@ fun ActionsCard(
                         modifier = Modifier.size(20.dp)
                     )
                     Spacer(modifier = Modifier.width(10.dp))
-                    Column(
-                        modifier = Modifier.weight(1f, fill = false),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text(
-                            text = "Открыть холст для рисования",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp,
-                            textAlign = TextAlign.Center
-                        )
-                        Text(
-                            text = "автоотправка штрихов при отпускании",
-                            fontSize = 11.sp,
-                            color = TextPrimary.copy(alpha = 0.85f),
-                            textAlign = TextAlign.Center
-                        )
-                    }
+                    Text(
+                        text = "Открыть холст для рисования",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        maxLines = 1
+                    )
                 }
             }
 
-            // Lock Screen Notification Shortcut Toggle
+            // Streak on Wallpaper Toggle
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -728,21 +755,21 @@ fun ActionsCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Notifications,
+                        painter = painterResource(id = R.drawable.ic_fire_streak),
                         contentDescription = null,
-                        tint = NeonCyan,
+                        tint = Color(0xFFFF5722),
                         modifier = Modifier.size(20.dp)
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Column {
                         Text(
-                            text = "Быстрый доступ на экране блокировки",
+                            text = "Огонёк на экране блокировки",
                             color = TextPrimary,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
-                            text = "Панель для рисования без полной разблокировки",
+                            text = "Отображать счётчик дней на живых обоях",
                             color = TextMuted,
                             fontSize = 11.sp,
                             lineHeight = 14.sp
@@ -751,15 +778,15 @@ fun ActionsCard(
                 }
 
                 Switch(
-                    checked = isNotificationEnabled,
-                    onCheckedChange = onToggleNotification,
+                    checked = showStreakOnWallpaper,
+                    onCheckedChange = onToggleStreakOnWallpaper,
                     colors = SwitchDefaults.colors(
-                        checkedThumbColor = DarkBackground,
-                        checkedTrackColor = NeonCyan,
+                        checkedThumbColor = Color(0xFFFF5722),
+                        checkedTrackColor = Color(0x66FF5722),
                         uncheckedThumbColor = TextMuted,
                         uncheckedTrackColor = DarkBorder
                     ),
-                    modifier = Modifier.testTag("notification_toggle")
+                    modifier = Modifier.testTag("streak_wallpaper_toggle")
                 )
             }
         }

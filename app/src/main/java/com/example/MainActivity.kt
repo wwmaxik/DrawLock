@@ -8,7 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
-import com.example.ui.lockscreen.LockscreenDrawActivity
+import com.example.ui.drawing.DrawingActivity
 import com.example.ui.main.MainScreen
 import com.example.ui.main.MainViewModel
 import com.example.ui.theme.DrawLockTheme
@@ -26,7 +26,7 @@ class MainActivity : ComponentActivity() {
                 MainScreen(
                     viewModel = viewModel,
                     onOpenLockDrawer = {
-                        val intent = Intent(this, LockscreenDrawActivity::class.java)
+                        val intent = Intent(this, DrawingActivity::class.java)
                         startActivity(intent)
                     },
                     onSetWallpaper = {

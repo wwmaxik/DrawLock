@@ -5,6 +5,7 @@ import android.util.Log
 import com.example.model.DrawingData
 import com.example.model.DrawingSerializer
 import com.example.model.DrawingStroke
+import com.example.model.StrokePath
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldValue
@@ -32,11 +33,16 @@ sealed interface PairingStatus {
     data class Error(val message: String) : PairingStatus
 }
 
+/**
+ * Manages Room pairing, real-time Firestore sync with arrayUnion merging, and auth state.
+ * Prevents broadcast feedback loops and protects against uninitialized empty overwrites.
+ */
 class PairingRepository private constructor(private val context: Context) {
 
     private val auth: FirebaseAuth by lazy { FirebaseAuth.getInstance() }
     private val firestore: FirebaseFirestore by lazy { FirebaseFirestore.getInstance() }
     private val cacheManager = DrawingCacheManager.getInstance(context)
+    private val drawingRepo = DrawingRepository.getInstance(context)
     private val scope = CoroutineScope(Dispatchers.IO)
     private val authMutex = Mutex()
 
@@ -45,6 +51,7 @@ class PairingRepository private constructor(private val context: Context) {
 
     private var roomListener: ListenerRegistration? = null
     private var activeRoomCode: String = ""
+    private var lastReceivedStrokesSignature: Int = 0
 
     init {
         scope.launch {
@@ -230,22 +237,25 @@ class PairingRepository private constructor(private val context: Context) {
         // 1. Check for merged strokes array
         val rawStrokes = snapshot.get("strokes") as? List<*>
         if (rawStrokes != null) {
-            val parsedStrokes = mutableListOf<com.example.model.StrokePath>()
+            val parsedStrokes = ArrayList<StrokePath>(rawStrokes.size)
             for (item in rawStrokes) {
                 if (item is Map<*, *>) {
-                    val stroke = com.example.model.StrokePath.fromMap(item)
-                    if (stroke != null) {
-                        parsedStrokes.add(stroke)
-                    }
+                    StrokePath.fromMap(item)?.let { parsedStrokes.add(it) }
                 }
             }
 
+            val signature = parsedStrokes.hashCode()
+            if (signature == lastReceivedStrokesSignature) {
+                return // Discard identical snapshot update
+            }
+            lastReceivedStrokesSignature = signature
+
             Log.d(TAG, "Received ${parsedStrokes.size} merged strokes from Firestore room $activeRoomCode")
 
-            // Save merged list into local strokes.json and broadcast REFRESH_WALLPAPER
-            DrawingRepository.getInstance(context).saveDrawing(parsedStrokes, broadcastRefresh = true)
+            // Save without triggering a broadcast loop (DrawWallpaperService listens directly to Firestore)
+            drawingRepo.saveDrawing(parsedStrokes, broadcastRefresh = false)
 
-            // Update cached drawing state for active UI/Canvas
+            // Update cached drawing state for active UI
             val drawingData = DrawingData(
                 senderId = partnerId.ifBlank { uid },
                 timestamp = System.currentTimeMillis(),
@@ -261,18 +271,16 @@ class PairingRepository private constructor(private val context: Context) {
             val senderId = lastDrawingMap["senderId"] as? String ?: ""
             val strokeDataJson = lastDrawingMap["strokeData"] as? String ?: ""
             if (strokeDataJson.isNotBlank()) {
-                Log.d(TAG, "Received legacy drawing in room from $senderId (local: $uid)")
                 val drawingData = DrawingSerializer.fromJson(strokeDataJson)
                 if (drawingData != null) {
-                    cacheManager.saveNewDrawing(drawingData, notifyWallpaper = true)
+                    cacheManager.saveNewDrawing(drawingData, notifyWallpaper = false)
                 }
             }
         }
     }
 
     /**
-     * Appends new strokes to the Firestore "strokes" array using FieldValue.arrayUnion
-     * Ensures simultaneous drawings from multiple partners merge seamlessly.
+     * Appends new strokes to the Firestore "strokes" array using FieldValue.arrayUnion.
      */
     fun appendStrokes(newStrokes: List<DrawingStroke>, onComplete: ((Boolean) -> Unit)? = null) {
         if (newStrokes.isEmpty()) {
@@ -282,13 +290,13 @@ class PairingRepository private constructor(private val context: Context) {
 
         val roomCode = activeRoomCode.ifBlank { cacheManager.roomCode.value }
         val strokeMaps = newStrokes.map { stroke ->
-            com.example.model.StrokePath.fromDrawingStroke(stroke).toMap()
+            StrokePath.fromDrawingStroke(stroke).toMap()
         }.toTypedArray()
 
-        // Also update local cache & strokes.json immediately
-        val currentStrokes = DrawingRepository.getInstance(context).getLatestDrawing().toMutableList()
-        currentStrokes.addAll(newStrokes.map { com.example.model.StrokePath.fromDrawingStroke(it) })
-        DrawingRepository.getInstance(context).saveDrawing(currentStrokes, broadcastRefresh = true)
+        // Update local cache & strokes.json immediately
+        val currentStrokes = drawingRepo.getLatestDrawing().toMutableList()
+        currentStrokes.addAll(newStrokes.map { StrokePath.fromDrawingStroke(it) })
+        drawingRepo.saveDrawing(currentStrokes, broadcastRefresh = false)
         cacheManager.saveNewDrawing(
             DrawingData(
                 senderId = getCurrentUserId(),
@@ -338,10 +346,10 @@ class PairingRepository private constructor(private val context: Context) {
      */
     fun replaceStrokes(strokes: List<DrawingStroke>, onComplete: ((Boolean) -> Unit)? = null) {
         val roomCode = activeRoomCode.ifBlank { cacheManager.roomCode.value }
-        val strokeMaps = strokes.map { com.example.model.StrokePath.fromDrawingStroke(it).toMap() }
+        val strokeMaps = strokes.map { StrokePath.fromDrawingStroke(it).toMap() }
 
-        val vectorStrokes = strokes.map { com.example.model.StrokePath.fromDrawingStroke(it) }
-        DrawingRepository.getInstance(context).saveDrawing(vectorStrokes, broadcastRefresh = true)
+        val vectorStrokes = strokes.map { StrokePath.fromDrawingStroke(it) }
+        drawingRepo.saveDrawing(vectorStrokes, broadcastRefresh = false)
         cacheManager.saveNewDrawing(
             DrawingData(
                 senderId = getCurrentUserId(),
@@ -385,16 +393,13 @@ class PairingRepository private constructor(private val context: Context) {
     }
 
     /**
-     * Clears the entire canvas:
-     * 1. Sets "strokes" to empty list in Firestore document /rooms/{roomCode}
-     * 2. Overwrites local strokes.json with empty array []
-     * 3. Broadcasts ru.wwmaxik.drawlock.REFRESH_WALLPAPER
+     * Clears the entire canvas
      */
     fun clearDrawing(onComplete: ((Boolean) -> Unit)? = null) {
         val roomCode = activeRoomCode.ifBlank { cacheManager.roomCode.value }
 
         // Local clear
-        DrawingRepository.getInstance(context).clearDrawing(broadcastRefresh = true)
+        drawingRepo.clearDrawing(broadcastRefresh = false)
         cacheManager.saveNewDrawing(
             DrawingData(
                 senderId = getCurrentUserId(),
@@ -451,7 +456,7 @@ class PairingRepository private constructor(private val context: Context) {
     fun refreshDrawingFromFirestore(onComplete: ((Boolean) -> Unit)? = null) {
         val code = activeRoomCode.ifBlank { cacheManager.roomCode.value }
         if (code.isBlank()) {
-            DrawingRepository.getInstance(context).broadcastRefresh()
+            drawingRepo.broadcastRefresh()
             onComplete?.invoke(true)
             return
         }
@@ -463,11 +468,11 @@ class PairingRepository private constructor(private val context: Context) {
                 if (snapshot.exists()) {
                     handleRoomUpdate(snapshot)
                 }
-                DrawingRepository.getInstance(context).broadcastRefresh()
+                drawingRepo.broadcastRefresh()
                 onComplete?.invoke(true)
             } catch (e: Exception) {
                 Log.e("DrawLock", "Error manually refreshing drawing from Firestore: ${e.message}", e)
-                DrawingRepository.getInstance(context).broadcastRefresh()
+                drawingRepo.broadcastRefresh()
                 onComplete?.invoke(false)
             }
         }
@@ -477,6 +482,7 @@ class PairingRepository private constructor(private val context: Context) {
         roomListener?.remove()
         roomListener = null
         activeRoomCode = ""
+        lastReceivedStrokesSignature = 0
         cacheManager.clearRoom()
         _pairingStatus.value = PairingStatus.Idle
     }

@@ -13,9 +13,6 @@ class BootReceiver : BroadcastReceiver() {
             val roomCode = cacheManager.roomCode.value
             if (roomCode.isNotBlank()) {
                 PairingRepository.getInstance(context).listenToRoom(roomCode)
-                if (cacheManager.shortcutNotificationEnabled.value) {
-                    LockscreenNotificationManager.showLockscreenShortcutNotification(context, roomCode)
-                }
             }
         }
     }

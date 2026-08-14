@@ -28,9 +28,6 @@ class DrawingCacheManager private constructor(private val context: Context) {
     private val _partnerConnected = MutableStateFlow(prefs.getBoolean(KEY_PARTNER_CONNECTED, false))
     val partnerConnected: StateFlow<Boolean> = _partnerConnected.asStateFlow()
 
-    private val _shortcutNotificationEnabled = MutableStateFlow(prefs.getBoolean(KEY_NOTIFICATION_ENABLED, true))
-    val shortcutNotificationEnabled: StateFlow<Boolean> = _shortcutNotificationEnabled.asStateFlow()
-
     init {
         loadCachedDrawing()
     }
@@ -54,11 +51,6 @@ class DrawingCacheManager private constructor(private val context: Context) {
         _partnerConnected.value = connected
     }
 
-    fun setNotificationEnabled(enabled: Boolean) {
-        prefs.edit().putBoolean(KEY_NOTIFICATION_ENABLED, enabled).apply()
-        _shortcutNotificationEnabled.value = enabled
-    }
-
     fun clearRoom() {
         prefs.edit()
             .remove(KEY_ROOM_CODE)
@@ -78,7 +70,9 @@ class DrawingCacheManager private constructor(private val context: Context) {
             com.example.model.StrokePath(
                 points = stroke.points.map { com.example.model.PointF(it.x, it.y) },
                 color = stroke.color.toInt(),
-                strokeWidth = stroke.widthRatio
+                strokeWidth = stroke.widthRatio,
+                alpha = stroke.alpha,
+                isFilled = stroke.isFilled
             )
         }
         DrawingRepository.getInstance(context).saveDrawing(vectorStrokes, broadcastRefresh = false)
@@ -108,7 +102,6 @@ class DrawingCacheManager private constructor(private val context: Context) {
         private const val KEY_ROOM_CODE = "room_code"
         private const val KEY_USER_ID = "user_id"
         private const val KEY_PARTNER_CONNECTED = "partner_connected"
-        private const val KEY_NOTIFICATION_ENABLED = "notification_enabled"
         private const val KEY_CACHED_DRAWING_JSON = "cached_drawing_json"
 
         @Volatile

@@ -23,6 +23,7 @@ data class DrawingStroke(
     val color: Long, // ARGB long value
     val widthRatio: Float, // Stroke width relative to canvas width
     val points: List<StrokePoint>,
+    val alpha: Float = 1.0f,
     val isFilled: Boolean = false
 )
 
@@ -49,10 +50,14 @@ object DrawingSerializer {
         for (stroke in drawingData.strokes) {
             val strokeObj = JSONObject()
             strokeObj.put("c", stroke.color)
+            strokeObj.put("color", stroke.color)
             strokeObj.put("w", stroke.widthRatio.toDouble())
-            if (stroke.isFilled) {
-                strokeObj.put("f", true)
-            }
+            strokeObj.put("strokeWidth", stroke.widthRatio.toDouble())
+            strokeObj.put("a", stroke.alpha.toDouble())
+            strokeObj.put("alpha", stroke.alpha.toDouble())
+            strokeObj.put("f", stroke.isFilled)
+            strokeObj.put("isFilled", stroke.isFilled)
+            strokeObj.put("filled", stroke.isFilled)
 
             val pointsArray = JSONArray()
             for (p in stroke.points) {
@@ -79,9 +84,25 @@ object DrawingSerializer {
 
             for (i in 0 until strokesArray.length()) {
                 val strokeObj = strokesArray.getJSONObject(i)
-                val color = strokeObj.optLong("c", 0xFF00F0FF)
-                val widthRatio = strokeObj.optDouble("w", 0.01).toFloat()
-                val isFilled = strokeObj.optBoolean("f", strokeObj.optBoolean("filled", false))
+                val color = if (strokeObj.has("color")) {
+                    strokeObj.optLong("color", 0xFF00F0FF)
+                } else {
+                    strokeObj.optLong("c", 0xFF00F0FF)
+                }
+                val widthRatio = if (strokeObj.has("strokeWidth")) {
+                    strokeObj.optDouble("strokeWidth", 0.01).toFloat()
+                } else {
+                    strokeObj.optDouble("w", 0.01).toFloat()
+                }
+                val alpha = if (strokeObj.has("alpha")) {
+                    strokeObj.optDouble("alpha", 1.0).toFloat()
+                } else {
+                    strokeObj.optDouble("a", 1.0).toFloat()
+                }
+                val isFilled = strokeObj.optBoolean(
+                    "isFilled",
+                    strokeObj.optBoolean("filled", strokeObj.optBoolean("f", false))
+                )
 
                 val ptsArray = strokeObj.optJSONArray("pts") ?: JSONArray()
                 val pointsList = mutableListOf<StrokePoint>()
@@ -92,7 +113,15 @@ object DrawingSerializer {
                     pointsList.add(StrokePoint(x = x, y = y))
                 }
                 if (pointsList.isNotEmpty()) {
-                    strokesList.add(DrawingStroke(color = color, widthRatio = widthRatio, points = pointsList, isFilled = isFilled))
+                    strokesList.add(
+                        DrawingStroke(
+                            color = color,
+                            widthRatio = widthRatio,
+                            points = pointsList,
+                            alpha = alpha.coerceIn(0f, 1f),
+                            isFilled = isFilled
+                        )
+                    )
                 }
             }
             DrawingData(senderId = senderId, timestamp = timestamp, strokes = strokesList)
@@ -132,7 +161,9 @@ object DrawingBitmapRenderer {
             if (stroke.points.isEmpty()) continue
 
             val strokePx = (stroke.widthRatio * width).coerceAtLeast(4f)
-            val strokeColor = stroke.color.toInt()
+            val baseColor = stroke.color.toInt()
+            val effectiveAlpha = (stroke.alpha * ((baseColor ushr 24) and 0xFF) / 255f).coerceIn(0f, 1f)
+            val strokeColor = (baseColor and 0x00FFFFFF) or ((effectiveAlpha * 255).toInt() shl 24)
 
             if (stroke.points.size == 1) {
                 val p = stroke.points[0]

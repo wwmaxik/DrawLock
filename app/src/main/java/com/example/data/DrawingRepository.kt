@@ -6,17 +6,20 @@ import android.content.SharedPreferences
 import android.util.Log
 import com.example.model.StrokePath
 import com.example.model.StrokeSerializer
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
  * Repository to persist and retrieve vector StrokePaths directly from strokes.json and SharedPreferences.
+ * Supports async reading/writing on Dispatchers.IO to prevent main-thread ANR / UI blocking.
  */
 class DrawingRepository(private val context: Context) {
 
     private val prefs: SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     /**
-     * Saves list of StrokePaths as JSON directly to strokes.json and SharedPreferences, then broadcasts refresh.
+     * Saves list of StrokePaths as JSON directly to strokes.json and SharedPreferences.
      */
     fun saveDrawing(strokes: List<StrokePath>, broadcastRefresh: Boolean = true) {
         val json = StrokeSerializer.toJson(strokes)
@@ -31,6 +34,15 @@ class DrawingRepository(private val context: Context) {
         prefs.edit().putString(KEY_LATEST_DRAWING_JSON, json).apply()
         if (broadcastRefresh) {
             broadcastRefresh()
+        }
+    }
+
+    /**
+     * Suspend version to save drawing asynchronously without blocking the calling thread.
+     */
+    suspend fun saveDrawingAsync(strokes: List<StrokePath>, broadcastRefresh: Boolean = true) {
+        withContext(Dispatchers.IO) {
+            saveDrawing(strokes, broadcastRefresh)
         }
     }
 
@@ -75,6 +87,13 @@ class DrawingRepository(private val context: Context) {
     }
 
     /**
+     * Offloads reading and deserializing strokes from disk to Dispatchers.IO.
+     */
+    suspend fun getLatestDrawingAsync(): List<StrokePath> = withContext(Dispatchers.IO) {
+        getLatestDrawing()
+    }
+
+    /**
      * Returns raw JSON string of the latest drawing.
      */
     fun getLatestDrawingJson(): String? {
@@ -110,7 +129,9 @@ class DrawingRepository(private val context: Context) {
      */
     fun broadcastRefresh() {
         try {
-            val intent = Intent(ACTION_REFRESH_WALLPAPER)
+            val intent = Intent(ACTION_REFRESH_WALLPAPER).apply {
+                flags = Intent.FLAG_RECEIVER_FOREGROUND
+            }
             context.sendBroadcast(intent)
             Log.d(TAG, "Sent broadcast: $ACTION_REFRESH_WALLPAPER")
         } catch (e: Exception) {
